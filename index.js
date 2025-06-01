@@ -135,7 +135,7 @@ app.delete('/api/registration/:id', async (req, res) => {
   }
 });
 
-// 10) PDF Export: Registrations table (A4)
+// 10) PDF Export: Registrations table (A4) with proper pagination
 app.get('/api/admin/export/registrations', async (req, res) => {
   try {
     const registrations = await Registration.find({}).lean();
@@ -144,14 +144,68 @@ app.get('/api/admin/export/registrations', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename=registrations.pdf');
     doc.pipe(res);
 
-    // -- Headings
-    doc.fontSize(16).text('SKSSF Kadaba Zone', { align: 'center' });
-    doc.fontSize(14).text('Annual Cabinet-Meet 2025', { align: 'center' });
-    doc.moveDown();
-    doc.fontSize(12).text('Registration Data', { align: 'center' });
-    doc.moveDown(0.5);
+    // -- Headings (will be drawn on each page) --
+    const drawTableHeader = () => {
+      // Titles
+      doc.fontSize(16).text('SKSSF Kadaba Zone', { align: 'center' });
+      doc.fontSize(14).text('Annual Cabinet-Meet 2025', { align: 'center' });
+      doc.moveDown();
+      doc.fontSize(12).text('Registration Data', { align: 'center' });
+      doc.moveDown(0.5);
 
-    // -- Table columns setup
+      // Table header border
+      const colWidths = {
+        sn: 30,
+        photo: 50,
+        name: 90,
+        cluster: 60,
+        unit: 60,
+        designations: 120,
+        signature: 60,
+      };
+      const totalTableWidth = Object.values(colWidths).reduce((sum, w) => sum + w, 0);
+      const startX = (doc.page.width - totalTableWidth) / 2;
+      let yPosition = doc.y;
+
+      // Top border line
+      doc
+        .save()
+        .moveTo(startX, yPosition)
+        .lineTo(startX + totalTableWidth, yPosition)
+        .strokeColor('#999')
+        .lineWidth(0.5)
+        .stroke()
+        .restore();
+
+      // Header row labels
+      const headerHeight = 20;
+      let x = startX;
+      doc.fontSize(10).fillColor('black');
+      ['S/N', 'Photo', 'Name', 'Cluster', 'Unit', 'Designations', 'Signature'].forEach((text, idx) => {
+        const key = Object.keys(colWidths)[idx];
+        doc.text(text, x, yPosition + 5, { width: colWidths[key], align: 'center' });
+        x += colWidths[key];
+      });
+
+      // Bottom border under header
+      const headerBottom = yPosition + headerHeight;
+      doc
+        .save()
+        .moveTo(startX, headerBottom)
+        .lineTo(startX + totalTableWidth, headerBottom)
+        .strokeColor('#999')
+        .lineWidth(0.5)
+        .stroke()
+        .restore();
+
+      // Return starting X and Y for rows
+      return { startX, yPosition: headerBottom };
+    };
+
+    // Draw first page header
+    let { startX, yPosition } = drawTableHeader();
+
+    // Column widths
     const colWidths = {
       sn: 30,
       photo: 50,
@@ -161,109 +215,118 @@ app.get('/api/admin/export/registrations', async (req, res) => {
       designations: 120,
       signature: 60,
     };
-    const totalTableWidth = Object.values(colWidths).reduce((sum, w) => sum + w, 0); // 470 pts
-    const startX = (doc.page.width - totalTableWidth) / 2;
-    let yPosition = doc.y;
-
-    // Draw top border above header
-    doc
-      .moveTo(startX, yPosition)
-      .lineTo(startX + totalTableWidth, yPosition)
-      .strokeColor('#999')
-      .lineWidth(0.5)
-      .stroke();
-
-    // Header row (20pt tall)
-    const headerHeight = 20;
-    let x = startX;
-    doc.fontSize(10);
-    ['S/N', 'Photo', 'Name', 'Cluster', 'Unit', 'Designations', 'Signature'].forEach((text, idx) => {
-      const key = Object.keys(colWidths)[idx];
-      doc.text(text, x, yPosition + 5, { width: colWidths[key], align: 'center' });
-      x += colWidths[key];
-    });
-    const headerBottom = yPosition + headerHeight;
-
-    // Draw bottom border under header
-    doc
-      .moveTo(startX, headerBottom)
-      .lineTo(startX + totalTableWidth, headerBottom)
-      .strokeColor('#999')
-      .lineWidth(0.5)
-      .stroke();
-
-    // -- Data rows
-    yPosition = headerBottom;
     const rowHeight = 60;
     let serialNo = 1;
 
-    registrations.forEach((reg) => {
-      x = startX;
+    // For each registration, draw a row; paginate as needed
+    for (let i = 0; i < registrations.length; i++) {
+      const reg = registrations[i];
 
-      // S/N column
-      doc.fontSize(10).text(serialNo.toString(), x, yPosition + 10, { width: colWidths.sn, align: 'center' });
+      // If next row overflows bottom margin, add page and redraw header
+      if (yPosition + rowHeight > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage({ size: 'A4', layout: 'portrait', margin: 50 });
+        const headerData = drawTableHeader();
+        startX = headerData.startX;
+        yPosition = headerData.yPosition;
+      }
+
+      // Draw the row
+      let x = startX;
+
+      // 1) S/N
+      doc.fontSize(10).fillColor('black');
+      doc.text(serialNo.toString(), x, yPosition + 10, {
+        width: colWidths.sn,
+        align: 'center',
+      });
       serialNo++;
       x += colWidths.sn;
 
-      // Photo column
+      // 2) Photo
       if (reg.photoUrl) {
         try {
           const imagePath = path.join(__dirname, reg.photoUrl);
-          doc.image(imagePath, x + 5, yPosition + 5, { fit: [colWidths.photo - 10, 50] });
+          if (fs.existsSync(imagePath)) {
+            doc.image(imagePath, x + 5, yPosition + 5, {
+              fit: [colWidths.photo - 10, 50],
+            });
+          } else {
+            doc
+              .fontSize(8)
+              .fillColor('gray')
+              .text('N/A', x, yPosition + 20, {
+                width: colWidths.photo,
+                align: 'center',
+              });
+          }
         } catch (err) {
-          console.error(`Error loading image for ${reg.name}:`, err);
-          doc.fontSize(8).text('N/A', x, yPosition + 5, { width: colWidths.photo, align: 'center' });
+          doc
+            .fontSize(8)
+            .fillColor('gray')
+            .text('N/A', x, yPosition + 20, {
+              width: colWidths.photo,
+              align: 'center',
+            });
         }
       } else {
-        doc.fontSize(8).text('N/A', x, yPosition + 5, { width: colWidths.photo, align: 'center' });
+        doc
+          .fontSize(8)
+          .fillColor('gray')
+          .text('N/A', x, yPosition + 20, {
+            width: colWidths.photo,
+            align: 'center',
+          });
       }
       x += colWidths.photo;
 
-      // Name / Cluster / Unit / Designations / Signature
-      doc.fontSize(10).text(reg.name, x, yPosition + 10, { width: colWidths.name, align: 'left' });
+      // 3) Name
+      doc.text(reg.name, x, yPosition + 10, {
+        width: colWidths.name,
+        align: 'left',
+      });
       x += colWidths.name;
-      doc.text(reg.cluster, x, yPosition + 10, { width: colWidths.cluster, align: 'left' });
+
+      // 4) Cluster
+      doc.text(reg.cluster, x, yPosition + 10, {
+        width: colWidths.cluster,
+        align: 'left',
+      });
       x += colWidths.cluster;
-      doc.text(reg.unit, x, yPosition + 10, { width: colWidths.unit, align: 'left' });
+
+      // 5) Unit
+      doc.text(reg.unit, x, yPosition + 10, {
+        width: colWidths.unit,
+        align: 'left',
+      });
       x += colWidths.unit;
+
+      // 6) Designations
       doc.text(reg.designations.join(', '), x, yPosition + 10, {
         width: colWidths.designations,
         align: 'left',
       });
       x += colWidths.designations;
-      doc.text('', x, yPosition + 10, { width: colWidths.signature, align: 'center' });
 
-      // Bottom border under this row
+      // 7) Signature (blank)
+      doc.text('', x, yPosition + 10, {
+        width: colWidths.signature,
+        align: 'center',
+      });
+
+      // Bottom border under row
       doc
+        .save()
         .moveTo(startX, yPosition + rowHeight)
-        .lineTo(startX + totalTableWidth, yPosition + rowHeight)
+        .lineTo(startX + Object.values(colWidths).reduce((s, w) => s + w, 0), yPosition + rowHeight)
         .strokeColor('#999')
         .lineWidth(0.5)
-        .stroke();
+        .stroke()
+        .restore();
 
+      // Advance Y
       yPosition += rowHeight;
-
-      // Page break logic
-      if (yPosition > doc.page.height - 50) {
-        doc.addPage({ size: 'A4', layout: 'portrait', margin: 50 });
-        yPosition = doc.y;
-        const newStartX = (doc.page.width - totalTableWidth) / 2;
-        x = newStartX;
-        doc.fontSize(10);
-        ['S/N', 'Photo', 'Name', 'Cluster', 'Unit', 'Designations', 'Signature'].forEach((text, idx) => {
-          const key = Object.keys(colWidths)[idx];
-          doc.text(text, x, yPosition + 5, { width: colWidths[key], align: 'center' });
-          x += colWidths[key];
-        });
-        yPosition += headerHeight;
-        doc
-          .moveTo(newStartX, yPosition)
-          .lineTo(newStartX + totalTableWidth, yPosition)
-          .strokeColor('#999')
-          .lineWidth(0.5)
-          .stroke();
-      }
-    });
+      doc.y = yPosition;
+    }
 
     doc.end();
   } catch (error) {
@@ -281,106 +344,126 @@ app.get('/api/admin/export/idcards', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename=idcards.pdf');
     doc.pipe(res);
 
-    // Card dimensions: 5.9cm × 8.4cm ≈ 167 × 238 pt
-    const cardWidth = 5.9 * 28.35;
-    const cardHeight = 8.4 * 28.35;
+    // Card dimensions in points at 300 DPI: 5.9cm×8.4cm → ~696×992 px
+    const cardWidth = (5.9 / 2.54) * 300;
+    const cardHeight = (8.4 / 2.54) * 300;
     const columns = 5;
     const rows = 5;
-    const cardsPerPage = columns * rows; // 25
+    const cardsPerPage = columns * rows;
     const margin = 20;
-    const availableWidth = doc.page.width - margin * 2;
-    const availableHeight = doc.page.height - margin * 2;
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const availableWidth = pageWidth - margin * 2;
+    const availableHeight = pageHeight - margin * 2;
     const gutterX = (availableWidth - columns * cardWidth) / (columns + 1);
     const gutterY = (availableHeight - rows * cardHeight) / (rows + 1);
 
-    // Helper to draw each ID card
+    // Helper to draw a single ID card at (x, y)
     const drawIDCard = (doc, x, y, reg) => {
-      doc.rect(x, y, cardWidth, cardHeight).fill('#B9D4AA');
+      // Background fill (template assumed to be drawn separately)
+      doc.rect(x, y, cardWidth, cardHeight).fill('#ECFAE5');
       doc.fillColor('black');
 
-      const headerPad = 0.1 * 28.35; // ≈ 2.8 pt
-      const imageWidth = 1 * 28.35; // ≈ 28.35 pt
-
-      // Load flag/logo from server‐side file system
-      const flagPath = path.join(__dirname, 'public', 'flag.png');
-      try {
-        doc.image(flagPath, x + headerPad, y + headerPad, { width: imageWidth });
-      } catch (err) {
-        console.error('Error loading flag image:', err);
-      }
-
-      const logoPath = path.join(__dirname, 'public', 'logo.png');
-      try {
-        doc.image(logoPath, x + cardWidth - imageWidth - headerPad, y + headerPad, { width: imageWidth });
-      } catch (err) {
-        console.error('Error loading logo image:', err);
-      }
-
-      doc.font('Helvetica-Bold').fontSize(11).text('SKSSF', x, y + 32, { width: cardWidth, align: 'center' });
-      doc.font('Helvetica').fontSize(8).text('Kadaba Zone', x, y + 45, { width: cardWidth, align: 'center' });
-      doc.text('Annual Cabinet-Meet 2025', x, y + 60, { width: cardWidth, align: 'center' });
-
-      // Photo rectangle and image
-      const photoWidth = 2 * 28.35; // ≈ 57 pt
-      const photoHeight = 2.5 * 28.35; // ≈ 71 pt
-      const photoX = x + (cardWidth - photoWidth) / 2;
-      const photoY = y + 70;
-      doc.rect(photoX, photoY, photoWidth, photoHeight).lineWidth(1).stroke();
-      if (reg.photoUrl) {
+      // Load template background if present (696×992 px PNG)
+      const templatePath = path.join(__dirname, 'public', 'idcard-template.png');
+      if (fs.existsSync(templatePath)) {
         try {
-          const photoPath = path.join(__dirname, reg.photoUrl);
-          doc.image(photoPath, photoX, photoY, { fit: [photoWidth, photoHeight] });
+          doc.image(templatePath, x, y, { width: cardWidth, height: cardHeight });
         } catch (err) {
-          console.error('Error loading photo for', reg.name, err);
+          console.error('Error loading ID card template:', err);
+        }
+      }
+
+      // Overlay photo, name, cluster–unit, designations at 300 DPI offsets (cm→px)
+      const cmToPx300 = (cm) => Math.round(cm * (300 / 2.54));
+      const PHOTO_DIAMETER_PX = cmToPx300(2.5);
+      const PHOTO_TOP_PX = y + cmToPx300(1.9);
+      const PHOTO_LEFT_PX = x + (cardWidth - PHOTO_DIAMETER_PX) / 2;
+
+      if (reg.photoUrl) {
+        const photoPath = path.join(__dirname, reg.photoUrl);
+        if (fs.existsSync(photoPath)) {
+          try {
+            doc.image(photoPath, PHOTO_LEFT_PX, PHOTO_TOP_PX, {
+              fit: [PHOTO_DIAMETER_PX, PHOTO_DIAMETER_PX],
+            });
+          } catch (err) {
+            doc
+              .fontSize(cmToPx300(0.3))
+              .fillColor('gray')
+              .text('No Photo', PHOTO_LEFT_PX, PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15), {
+                width: PHOTO_DIAMETER_PX,
+                align: 'center',
+              });
+          }
+        } else {
           doc
-            .fontSize(8)
-            .text('No Photo', photoX, photoY + photoHeight / 2 - 4, { width: photoWidth, align: 'center' });
+            .fontSize(cmToPx300(0.3))
+            .fillColor('gray')
+            .text('No Photo', PHOTO_LEFT_PX, PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15), {
+              width: PHOTO_DIAMETER_PX,
+              align: 'center',
+            });
         }
       } else {
         doc
-          .fontSize(8)
-          .text('No Photo', photoX, photoY + photoHeight / 2 - 4, { width: photoWidth, align: 'center' });
+          .fontSize(cmToPx300(0.3))
+          .fillColor('gray')
+          .text('No Photo', PHOTO_LEFT_PX, PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15), {
+            width: PHOTO_DIAMETER_PX,
+            align: 'center',
+          });
       }
 
-      // Name, cluster‐unit, designations
-      let detailY = photoY + photoHeight + 10;
-      doc.font('Helvetica-Bold').fontSize(8).text(reg.name, x + 5, detailY, { width: cardWidth - 10, align: 'center' });
-      detailY += 15;
-      doc.font('Helvetica').text(`${reg.cluster} - ${reg.unit}`, x + 5, detailY, {
-        width: cardWidth - 10,
-        align: 'center',
-      });
-      detailY += 15;
-      doc.text(reg.designations.join(', '), x + 5, detailY, { width: cardWidth - 10, align: 'center' });
+      // Name, cluster–unit, designations text
+      let detailY = PHOTO_TOP_PX + PHOTO_DIAMETER_PX + cmToPx300(0.2);
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(cmToPx300(0.35))
+        .fillColor('#000')
+        .text(reg.name, x + 5, detailY, {
+          width: cardWidth - 10,
+          align: 'center',
+        });
 
-      // Footer (date + “Mueenul Islam Madrasa Kadaba”)
-      const footerHeight = 0.1 * 28.35 + 8 + 0.1 * 28.35; // ~14 pt
-      doc.rect(x, y + cardHeight - footerHeight, cardWidth, footerHeight).fill('#5A827E');
-      doc.fillColor('black').fontSize(8).font('Helvetica');
-      doc.text('01-06-2025 Sunday', x, y + cardHeight - footerHeight + 3, {
-        width: cardWidth,
-        align: 'center',
-      });
-      doc.text('Mueenul Islam Madrasa Kadaba', x, y + cardHeight - footerHeight + 10, {
-        width: cardWidth,
-        align: 'center',
-      });
+      detailY += cmToPx300(1.2);
+      doc
+        .font('Helvetica')
+        .fontSize(cmToPx300(0.28))
+        .fillColor('#000')
+        .text(`${reg.cluster} – ${reg.unit}`, x + 5, detailY, {
+          width: cardWidth - 10,
+          align: 'center',
+        });
+
+      detailY += cmToPx300(1.0);
+      doc
+        .font('Helvetica-Bold')
+        .fontSize(cmToPx300(0.28))
+        .fillColor('#000')
+        .text(reg.designations.join(', '), x + 5, detailY, {
+          width: cardWidth - 10,
+          align: 'center',
+        });
     };
 
     let cardCount = 0;
-    registrations.forEach((reg, index) => {
+    for (let i = 0; i < registrations.length; i++) {
+      const reg = registrations[i];
       const posIndex = cardCount % cardsPerPage;
       const colIndex = posIndex % columns;
       const rowIndex = Math.floor(posIndex / columns);
+
       const x = margin + gutterX + colIndex * (cardWidth + gutterX);
       const y = margin + gutterY + rowIndex * (cardHeight + gutterY);
+
       drawIDCard(doc, x, y, reg);
       cardCount++;
 
-      if (cardCount % cardsPerPage === 0 && index < registrations.length - 1) {
-        doc.addPage({ size: 'A3', layout: 'portrait', margin });
+      if (cardCount % cardsPerPage === 0 && i < registrations.length - 1) {
+        doc.addPage({ size: 'A3', layout: 'portrait', margin: 20 });
       }
-    });
+    }
 
     doc.end();
   } catch (error) {
