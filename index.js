@@ -30,7 +30,7 @@ const mongoURI = process.env.MONGO_URI;
 mongoose
   .connect(mongoURI, {
     tls: true,
-    // If you want to enforce TLS 1.2+, you could add:
+    // Uncomment to enforce TLS 1.2+:
     // minVersion: 'TLSv1.2',
   })
   .then(() => console.log('MongoDB connected'))
@@ -42,7 +42,7 @@ const registrationSchema = new mongoose.Schema({
   cluster: { type: String, required: true },
   unit: { type: String, required: true },
   designations: [{ type: String }],
-  photoUrl: { type: String }, // will store local path, e.g. "uploads/filename.jpg"
+  photoUrl: { type: String }, // e.g. "uploads/filename.jpg"
   createdAt: { type: Date, default: Date.now },
 });
 const Registration = mongoose.model('Registration', registrationSchema);
@@ -78,8 +78,8 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
 
     let photoUrl = '';
     if (req.file) {
-      // Multer has saved the file under "uploads/..."
-      photoUrl = req.file.path; // e.g. 'uploads/photo-1629876543210.jpg'
+      // Multer saved it under "uploads/…"
+      photoUrl = req.file.path; // e.g. "uploads/photo-1629876543210.jpg"
     }
 
     let designationsArray = [];
@@ -144,16 +144,14 @@ app.get('/api/admin/export/registrations', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename=registrations.pdf');
     doc.pipe(res);
 
-    // -- Headings (will be drawn on each page) --
+    // -- Draw table header on each page --
     const drawTableHeader = () => {
-      // Titles
       doc.fontSize(16).text('SKSSF Kadaba Zone', { align: 'center' });
       doc.fontSize(14).text('Annual Cabinet-Meet 2025', { align: 'center' });
       doc.moveDown();
       doc.fontSize(12).text('Registration Data', { align: 'center' });
       doc.moveDown(0.5);
 
-      // Table header border
       const colWidths = {
         sn: 30,
         photo: 50,
@@ -177,7 +175,7 @@ app.get('/api/admin/export/registrations', async (req, res) => {
         .stroke()
         .restore();
 
-      // Header row labels
+      // Header row (20pt tall)
       const headerHeight = 20;
       let x = startX;
       doc.fontSize(10).fillColor('black');
@@ -198,14 +196,11 @@ app.get('/api/admin/export/registrations', async (req, res) => {
         .stroke()
         .restore();
 
-      // Return starting X and Y for rows
       return { startX, yPosition: headerBottom };
     };
 
     // Draw first page header
     let { startX, yPosition } = drawTableHeader();
-
-    // Column widths
     const colWidths = {
       sn: 30,
       photo: 50,
@@ -218,11 +213,10 @@ app.get('/api/admin/export/registrations', async (req, res) => {
     const rowHeight = 60;
     let serialNo = 1;
 
-    // For each registration, draw a row; paginate as needed
     for (let i = 0; i < registrations.length; i++) {
       const reg = registrations[i];
 
-      // If next row overflows bottom margin, add page and redraw header
+      // Paginate if needed
       if (yPosition + rowHeight > doc.page.height - doc.page.margins.bottom) {
         doc.addPage({ size: 'A4', layout: 'portrait', margin: 50 });
         const headerData = drawTableHeader();
@@ -230,7 +224,6 @@ app.get('/api/admin/export/registrations', async (req, res) => {
         yPosition = headerData.yPosition;
       }
 
-      // Draw the row
       let x = startX;
 
       // 1) S/N
@@ -259,7 +252,7 @@ app.get('/api/admin/export/registrations', async (req, res) => {
                 align: 'center',
               });
           }
-        } catch (err) {
+        } catch {
           doc
             .fontSize(8)
             .fillColor('gray')
@@ -323,7 +316,6 @@ app.get('/api/admin/export/registrations', async (req, res) => {
         .stroke()
         .restore();
 
-      // Advance Y
       yPosition += rowHeight;
       doc.y = yPosition;
     }
@@ -344,7 +336,7 @@ app.get('/api/admin/export/idcards', async (req, res) => {
     res.setHeader('Content-Disposition', 'attachment; filename=idcards.pdf');
     doc.pipe(res);
 
-    // Card dimensions in points at 300 DPI: 5.9cm×8.4cm → ~696×992 px
+    // Card dims at 300 DPI: 5.9cm × 8.4cm → ~696 × 992 px
     const cardWidth = (5.9 / 2.54) * 300;
     const cardHeight = (8.4 / 2.54) * 300;
     const columns = 5;
@@ -358,13 +350,11 @@ app.get('/api/admin/export/idcards', async (req, res) => {
     const gutterX = (availableWidth - columns * cardWidth) / (columns + 1);
     const gutterY = (availableHeight - rows * cardHeight) / (rows + 1);
 
-    // Helper to draw a single ID card at (x, y)
     const drawIDCard = (doc, x, y, reg) => {
-      // Background fill (template assumed to be drawn separately)
       doc.rect(x, y, cardWidth, cardHeight).fill('#ECFAE5');
       doc.fillColor('black');
 
-      // Load template background if present (696×992 px PNG)
+      // Use high-res template if present
       const templatePath = path.join(__dirname, 'public', 'idcard-template.png');
       if (fs.existsSync(templatePath)) {
         try {
@@ -374,7 +364,6 @@ app.get('/api/admin/export/idcards', async (req, res) => {
         }
       }
 
-      // Overlay photo, name, cluster–unit, designations at 300 DPI offsets (cm→px)
       const cmToPx300 = (cm) => Math.round(cm * (300 / 2.54));
       const PHOTO_DIAMETER_PX = cmToPx300(2.5);
       const PHOTO_TOP_PX = y + cmToPx300(1.9);
@@ -387,35 +376,40 @@ app.get('/api/admin/export/idcards', async (req, res) => {
             doc.image(photoPath, PHOTO_LEFT_PX, PHOTO_TOP_PX, {
               fit: [PHOTO_DIAMETER_PX, PHOTO_DIAMETER_PX],
             });
-          } catch (err) {
+          } catch {
             doc
               .fontSize(cmToPx300(0.3))
               .fillColor('gray')
-              .text('No Photo', PHOTO_LEFT_PX, PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15), {
-                width: PHOTO_DIAMETER_PX,
-                align: 'center',
-              });
+              .text(
+                'No Photo',
+                PHOTO_LEFT_PX,
+                PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15),
+                { width: PHOTO_DIAMETER_PX, align: 'center' }
+              );
           }
         } else {
           doc
             .fontSize(cmToPx300(0.3))
             .fillColor('gray')
-            .text('No Photo', PHOTO_LEFT_PX, PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15), {
-              width: PHOTO_DIAMETER_PX,
-              align: 'center',
-            });
+            .text(
+              'No Photo',
+              PHOTO_LEFT_PX,
+              PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15),
+              { width: PHOTO_DIAMETER_PX, align: 'center' }
+            );
         }
       } else {
         doc
           .fontSize(cmToPx300(0.3))
           .fillColor('gray')
-          .text('No Photo', PHOTO_LEFT_PX, PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15), {
-            width: PHOTO_DIAMETER_PX,
-            align: 'center',
-          });
+          .text(
+            'No Photo',
+            PHOTO_LEFT_PX,
+            PHOTO_TOP_PX + PHOTO_DIAMETER_PX / 2 - cmToPx300(0.15),
+            { width: PHOTO_DIAMETER_PX, align: 'center' }
+          );
       }
 
-      // Name, cluster–unit, designations text
       let detailY = PHOTO_TOP_PX + PHOTO_DIAMETER_PX + cmToPx300(0.2);
       doc
         .font('Helvetica-Bold')
